@@ -37,14 +37,18 @@ def build_report(movers_df):
 
         trading_days_since = None
         sue = np.nan
+        sue_persistence = None
+        sue_persistence_detail = None
         if earn_info is not None:
             calendar_days = (pd.Timestamp.today(tz=None).normalize()
                               - earn_info["last_earnings_date"].tz_localize(None)).days
             trading_days_since = max(int(round(calendar_days * 5 / 7)), 0)
             sue = earn_info["sue"]
+            sue_persistence = earn_info["sue_persistence"]
+            sue_persistence_detail = earn_info["sue_persistence_detail"]
 
         move_dir = 1 if row["pct_change"] > 0 else -1
-        pead_flag = classify_pead(trading_days_since, sue, move_dir)
+        pead_flag = classify_pead(trading_days_since, sue, move_dir, sue_persistence)
 
         data_check = None
         vol_ratio = row["volume_vs_avg"]
@@ -60,6 +64,8 @@ def build_report(movers_df):
             "top_headline": headlines[0] if headlines else "(no headline found)",
             "days_since_earnings": trading_days_since,
             "sue": round(sue, 2) if pd.notna(sue) else None,
+            "sue_persistence": sue_persistence,
+            "sue_persistence_detail": sue_persistence_detail,
             "pead_flag": pead_flag,
             "data_check": data_check,
             "as_of": row["as_of"],
