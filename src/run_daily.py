@@ -63,7 +63,7 @@ def build_report(movers_df):
             "news_tags": ", ".join(tags),
             "top_headline": headlines[0] if headlines else "(no headline found)",
             "days_since_earnings": trading_days_since,
-            "sue": round(sue, 2) if pd.notna(sue) else None,
+            "sue": round(sue, 3) if pd.notna(sue) else None,
             "sue_persistence": sue_persistence,
             "sue_persistence_detail": sue_persistence_detail,
             "pead_flag": pead_flag,
