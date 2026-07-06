@@ -31,18 +31,60 @@ SUE_AMBIGUOUS_THRESHOLD = 0.1         # |SUE| below this is treated as noise, no
 MIN_QUARTERS_FOR_PERSISTENCE = 2      # need at least this many prior quarters to judge persistence
 
 
+def _strip_tz(ts):
+    """Safely removes timezone info from a Timestamp if present, leaves it
+    alone if it's already naive. yfinance's earnings dates are inconsistently
+    tz-aware depending on ticker/exchange, so raw .tz_localize(None) calls
+    can crash on an already-naive timestamp -- this avoids that."""
+    if ts is None:
+        return None
+    try:
+        return ts.tz_localize(None)
+    except TypeError:
+        return ts  # already tz-naive
+
+
+def get_last_earnings_date(ticker):
+    """Returns the most recent PAST earnings date for a ticker, regardless
+    of whether an analyst estimate is available for it. This is the
+    'honest' answer to 'when did they last report' -- independent of
+    whether we can also compute a SUE for that date.
+
+    Returns None if no earnings date data is available at all.
+    """
+    try:
+        t = yf.Ticker(ticker)
+        edf = t.get_earnings_dates(limit=16)
+        if edf is None or edf.empty:
+            return None
+        edf.index = [_strip_tz(ts) for ts in edf.index]
+        now = pd.Timestamp.now().normalize()
+        past = edf[edf.index <= now]
+        if past.empty:
+            return None
+        return past.index.max()
+    except Exception:
+        return None
+
+
 def get_earnings_history(ticker, n_quarters=6):
     """Pulls up to n_quarters of reported earnings + SUE for a ticker, sorted
-    oldest to newest. Returns None if no usable data is available.
+    oldest to newest -- ONLY for quarters where both Reported EPS and EPS
+    Estimate are available. Returns None if no usable data is available.
 
-    Returns a DataFrame with columns: reported_eps, eps_estimate, sue,
-    indexed by earnings date.
+    Note: the most recent quarter in this history may NOT be the company's
+    actual most recent earnings report -- if the latest report lacks an
+    analyst estimate, this will silently fall back to an older quarter.
+    Use get_last_earnings_date() separately to get the honest most-recent
+    report date, and compare against this history's last index to detect
+    that mismatch (see get_earnings_info, which does this check).
     """
     try:
         t = yf.Ticker(ticker)
         edf = t.get_earnings_dates(limit=max(n_quarters + 4, 12))  # pad for dropna losses
         if edf is None or edf.empty:
             return None
+        edf.index = [_strip_tz(ts) for ts in edf.index]
         edf = edf.dropna(subset=["Reported EPS", "EPS Estimate"])
         if edf.empty:
             return None
@@ -59,12 +101,40 @@ def get_earnings_history(ticker, n_quarters=6):
 
 
 def get_earnings_info(ticker):
-    """Pulls last reported earnings + SUE + persistence classification for a
-    ticker. Returns None if no usable earnings/estimate data is available.
+    """Pulls the honest last-earnings-date, plus SUE + persistence
+    classification IF a SUE is available for that specific date. If the
+    most recent report lacks an analyst estimate (common for thinly-covered
+    names, especially NSE tickers), this returns days-since correctly
+    while explicitly marking SUE as unavailable for the current report --
+    rather than silently substituting an older quarter's SUE.
+
+    Returns None only if we can't even establish a last earnings date at all.
     """
-    history = get_earnings_history(ticker)
-    if history is None or history.empty:
+    last_earnings_date = get_last_earnings_date(ticker)
+    if last_earnings_date is None:
         return None
+
+    history = get_earnings_history(ticker)
+    history_is_current = (
+        history is not None and not history.empty
+        and history.index[-1] == last_earnings_date
+    )
+
+    if not history_is_current:
+        return {
+            "last_earnings_date": last_earnings_date,
+            "reported_eps": None,
+            "eps_estimate": None,
+            "sue": np.nan,
+            "sue_persistence": "N/A - no analyst estimate for most recent report",
+            "sue_persistence_detail": (
+                "SUE history exists for older quarters but not the most recent "
+                "report; persistence can't be judged without a current SUE to compare"
+                if history is not None and not history.empty
+                else "No analyst-estimate-paired earnings data available at all for this ticker"
+            ),
+            "n_prior_quarters": 0,
+        }
 
     last_row = history.iloc[-1]
     current_sue = last_row["SUE"]
@@ -73,7 +143,7 @@ def get_earnings_info(ticker):
     persistence_label, persistence_detail = classify_sue_persistence(current_sue, prior_sues)
 
     return {
-        "last_earnings_date": history.index[-1],
+        "last_earnings_date": last_earnings_date,
         "reported_eps": last_row["Reported EPS"],
         "eps_estimate": last_row["EPS Estimate"],
         "sue": current_sue,
